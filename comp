@@ -1,0 +1,2 @@
+~/tmp/micropython/mpy-cross/mpy-cross -march=xtensa $1
+
