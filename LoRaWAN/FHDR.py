@@ -1,12 +1,12 @@
 #
 # fhdr: devaddr(4) fctrl(1) fcnt(2) fopts(0..N)
 #
+
 from .MalformedPacketException import MalformedPacketException
 from struct import unpack
 from .MHDR import MHDR
 
 class FHDR:
-
     def read(self, mac_payload):
         if len(mac_payload) < 7:
             raise MalformedPacketException("Invalid fhdr")

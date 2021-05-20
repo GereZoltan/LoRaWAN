@@ -13,24 +13,34 @@ from LoRaWAN.MHDR import MHDR
 # MOSI = const(7)
 # MISO = const(4)
 # SCLK = const(6)
-CS = const(5)
-DIO1 = const(10)
-BUSY = const(14)
-RESET = const(15)
-LED_PIN = const(25)
-led = machine.Pin(LED_PIN, machine.Pin.OUT)
+
+#CS = const(5)
+#DIO1 = const(10)
+#BUSY = const(14)
+#RESET = const(15)
+
+CS = const(0)
+DIO1 = const(16)
+BUSY = const(15)
+RESET = const(2)
+
+#LED_PIN = const(25)
+#led = machine.Pin(LED_PIN, machine.Pin.OUT)
 
 # e6 60 58 38 83 9d 88 34
 boardID = machine.unique_id()
 
 # LoRa
-freqList = [867.1, 867.3, 867.5, 867.7, 867.9, 868.1, 868.3, 868.5] 
-#freqList = [868.1] #, 868.3, 868.5] 
+freqList = [867.1, 867.3, 867.5, 867.7, 867.9, 868.1, 868.3, 868.5]
+#freqList = [868.1] #, 868.3, 868.5]
 #DR = [[125,12],[125,11],[125,10],[125,9],[125,8],[125,7],[250,7]] # Last setting is 868.3 MHz only (Standard), the rest is any frequency (MultiSF)
 DRList = [[125,12],[125,11],[125,10],[125,9],[125,8],[125,7]] # DR0 - DR5
+MaxEIRP = 16
+TXPowerTable = [MaxEIRP, MaxEIRP - 2, MaxEIRP - 4 , MaxEIRP - 6, MaxEIRP - 8, MaxEIRP - 10, MaxEIRP - 12, MaxEIRP - 14]
 
 currentFreq = 0
 currentDR = 0
+currentPower = 0
 
 # ABP
 devaddrABP = [0x26, 0x01, 0x11, 0x5f]
@@ -46,7 +56,8 @@ devaddr = []
 nwskey = []
 appskey = []
 devnonce = [0, 0]
-payload = []
+RXpayload = []
+RXerr = None
 frameCounter = 0
 
 ################################################################################
@@ -69,7 +80,7 @@ sx = SX1262(cs=CS,irq=DIO1,rst=RESET,gpio=BUSY)
 # preambleLength = 8
 # 868.3, 125, 12, 5, SX126X_SYNC_WORD_PUBLIC, 5, 8, 0.0, true
 sx.begin(freq=freqList[currentFreq], bw=DRList[currentDR][0], sf=DRList[currentDR][1], cr=5, syncWord=SX126X_SYNC_WORD_PUBLIC, # syncWord=0x12 (private) 0x34 (public)
-         power=14, currentLimit=60.0, preambleLength=8,
+         power=TXPowerTable[currentPower], currentLimit=60.0, preambleLength=8,
          implicit=False, implicitLen=0xFF,
          crcOn=True, txIq=False, rxIq=True,
          tcxoVoltage=0.0, useRegulatorLDO=True, blocking=True)
@@ -99,12 +110,13 @@ def TXcb(events):
         print("TX done.")
 
 def RXcb(events):
-    global payload
+    global RXpayload
+    global RXerr
     if events & SX1262.RX_DONE:
-        payload, err = sx.recv()
+        RXpayload, RXerr = sx.recv()
 #        print("RXcb receive")
-#        error = SX1262.STATUS[err]
-#        print(payload)
+#        error = SX1262.STATUS[RXerr]
+#        print(RXpayload)
 #        if (error != ERR_NONE):
 #            print(error)
 
@@ -121,12 +133,33 @@ def nextFreq():
 def setDR(newDR):
     global currentDR
     if ((newDR <= 5) and (newDR >= 0) and (newDR != currentDR)):
-        currentDR = newDR 
+        currentDR = newDR
         sx.setBandwidth(DRList[currentDR][0])
         sx.setSpreadingFactor(DRList[currentDR][1])
 
+def setTXPower(TXpower = 0):
+    if (TXpower < 0):
+        TXpower = 0
+    if (TXpower > 7):
+        TXpower = 7
+    if (currentPower != TXpower):
+        currentPower = TXpower
+        sx.setOutputPower(TXPowerTable[TXpower])
+
 def help():
     print("Available commands:\n\tsendRAW(msg)\n\treceiveRAW(timeout)\n\tscan()\n\tsend_abp(message)\n\tsend(message,confirmed)\n\totaa()")
+
+# FCtrl: downlink frames
+#       ADR[7] RFU[6] ACK[5] FPending[4] FOptsLen[3..0]
+#        uplink frames
+#       ADR[7] ADRACKReq[6] ACK[5] ClassB[4] FOptsLen[3..0]
+    ADR = 0x80
+    RFU = 0x40
+    ACK = 0x20
+    FPENDING = 0x10
+    FOPTSLEN = 0x0F
+    ADRACKREQ = 0x40
+    CLASSB = 0x10
 
 def sendRAW(msg=b'Hello'):
     freq = nextFreq()
@@ -169,11 +202,21 @@ def send_abp(msg = "Empty string!"):
     frameCounterABP += 1
 
 def send(msg = "Testmessage!", confirmed = False, DR = 0):
+    '''
+    Send a LoRaWAN frame
+    params: msg: string or bytearray
+            confirmed: True / False
+            DR: dara rate 0 - 5
+    return: in case of confirmed send, if answer message was received
+            in case of unconfirmed send, always True
+    '''
     # TODO: Check if connected
     # TODO: Check for confirmation
     # TODO: Chock for incoming in both receive windows
     global frameCounter
-    global payload
+    global RXpayload
+
+    success = False
 
     if ((len(nwskey) == 0) or (len(appskey) == 0)):
         print("Error with session keys! Have you run OTAA?")
@@ -189,7 +232,7 @@ def send(msg = "Testmessage!", confirmed = False, DR = 0):
     else:
         msgtype = MHDR.UNCONF_DATA_UP
         
-    payload = []
+    RXpayload = []
 
     lorawan = LoRaWAN.new(nwskey, appskey)
 #    print("nwskey", nwskey)
@@ -205,10 +248,10 @@ def send(msg = "Testmessage!", confirmed = False, DR = 0):
         startTime = utime.ticks_ms()
 #        try:
         while True:
-            if (len(payload) > 0):
+            if (len(RXpayload) > 0):
                 print("Confirmation received")
                 lorawan = LoRaWAN.new(nwskey, appskey)
-                lorawan.read(payload)
+                lorawan.read(RXpayload)
 #                if (lorawan.get_payload() != None):
 #                    print("Payload: ", lorawan.get_payload())
 #                else:
@@ -216,6 +259,7 @@ def send(msg = "Testmessage!", confirmed = False, DR = 0):
 #                print("MHDR version: ", lorawan.get_mhdr().get_mversion())
 #                print("MHDR type: ", lorawan.get_mhdr().get_mtype())
 #                print("Received MIC: ", lorawan.get_mic(), " Computed MIC: ", lorawan.compute_mic(), " Valid: ", lorawan.valid_mic())
+                success = True
                 break
 
             # 30 seconds timeout
@@ -224,6 +268,10 @@ def send(msg = "Testmessage!", confirmed = False, DR = 0):
                 break
 #        except:
 #            print("Error occured during receiving!")
+    else:
+        success = True          # Sending unconfirmed message always True
+
+    return success              # End of Send()
 
 def loadDevNonce():
     global devnonce
@@ -268,10 +316,13 @@ def otaa():
     # TODO: Read Join-Accept frame for MAC layer settings
 
     global currentFreq
-    global payload
+    global RXpayload
+    global RXerr
     global devaddr
     global nwskey
     global appskey
+
+    success = False
 
     loadDevNonce()
     print("Sending Join request")
@@ -282,7 +333,7 @@ def otaa():
     sendRAW(msg)
     print("TxDone")
 
-#    payload, err = sx.recv(0, True, 5000)    # recv(len=0, timeout_en=False, timeout_ms=0)
+#    RXpayload, RXerr = sx.recv(0, True, 5000)    # recv(len=0, timeout_en=False, timeout_ms=0)
 #    error = SX1262.STATUS[err]
 #    print("Modem status: ", error)
 
@@ -290,10 +341,10 @@ def otaa():
 
 #    try:
     while True:
-        if (len(payload) > 0):
+        if (len(RXpayload) > 0):
             print("Message received:", end='')
             lorawan = LoRaWAN.new([], appkey)
-            lorawan.read(payload)
+            lorawan.read(RXpayload)
             decPayload = lorawan.get_payload()
 #            print(lorawan.get_payload())
 #            print(lorawan.get_mhdr().get_mversion())
@@ -316,7 +367,11 @@ def otaa():
                 devaddr = lorawan.get_devaddr()
                 nwskey = lorawan.derive_nwskey(devnonce)
                 appskey = lorawan.derive_appskey(devnonce)
+                DLSettings = lorawan.get_dlsettings()
+                RXDelay = lorawan.get_rxdelay()
+
                 print("OTAA activation successful!")
+                success = True
                 break
 
 #        time.sleep_ms(10)
@@ -332,6 +387,7 @@ def otaa():
 #    finally:
     incrementDevNonce()
     saveDevNonce()
+    return success
 
 # otaa() ends here
 
