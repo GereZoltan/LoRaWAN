@@ -11,11 +11,18 @@ class DataPayload:
     #    pointer to parent MACPayload, FRMPayload(can be None)
     def read(self, mac_payload, payload):
         self.mac_payload = mac_payload
-        self.payload = payload
+#        self.payload = payload
+        if (payload == None):
+            self.payload = None
+        else:
+            self.payload =  list(map(int, payload))
 
     def create(self, mac_payload, key, args):
         self.mac_payload = mac_payload
-        self.set_payload(key, 0x00, args['data'])
+        if ('data' in args):
+            self.set_payload(key, 0x00, args['data'])
+        else:
+            self.payload = None
 
     def length(self):
         if (self.payload == None):

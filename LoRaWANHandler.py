@@ -102,7 +102,7 @@ class LoRaWANHandler:
     FrameCount = 0
     NbTrans = 1
     FCntUp = 0
-    FCntDown = 0
+    FCntDown = -1
     Result = False
 
     INVALID = const(0)
@@ -125,13 +125,13 @@ class LoRaWANHandler:
 #       ADR[7] RFU[6] ACK[5] FPending[4] FOptsLen[3..0]
 #   uplink frames
 #       ADR[7] ADRACKReq[6] ACK[5] ClassB[4] FOptsLen[3..0]
-    ADR = const(0x80)
-    RFU = const(0x40)
-    ACK = const(0x20)
-    FPENDING = const(0x10)
-    FOPTSLEN = const(0x0F)
-    ADRACKREQ = const(0x40)
-    CLASSB = const(0x10)
+    ADR = 0x80
+    RFU = 0x40
+    ACK = 0x20
+    FPENDING = 0x10
+    FOPTSLEN = 0x0F
+    ADRACKREQ = 0x40
+    CLASSB = 0x10
 
 ################################################################################
 
@@ -301,7 +301,7 @@ class LoRaWANHandler:
 
 
 
-    def send_otaa(self, msg = "Testmessage!", confirmed = False):
+    def Send_OTAA(self, msg = "Testmessage!", confirmed = False):
         '''
         Send a LoRaWAN frame
         params: msg: string or bytearray
@@ -376,7 +376,7 @@ class LoRaWANHandler:
             success = True          # Sending unconfirmed message always True
 
         return success
-    # End of Send()
+    # End of Send_OTAA()
 
 
 
@@ -385,28 +385,26 @@ class LoRaWANHandler:
         # TODO: Check tx_counter
         # TODO: Read Join-Accept frame for MAC layer settings
 
-        success = False
+        RX1Window = self.JOIN_ACCEPT_DELAY1 * 1000
+        RX2Window = self.JOIN_ACCEPT_DELAY2 * 1000
+        RXTimeout = (self.JOIN_ACCEPT_DELAY2 + 10) * 1000
+
         self.loadDevNonce()
         self.SXRadio.setFrequency(self.nextFreq())
-        self.setDR(currentDR)
-        print("Sending Join request")
+        self.setDR(self.currentDR)
+        print("Sending Join request:", end='')
         lorawan = LoRaWAN.new(self.AppKey)
         lorawan.create(MHDR.JOIN_REQUEST, {'deveui': self.DevEUI, 'appeui': self.JoinEUI, 'devnonce': self.DevNOnce})
         msg = lorawan.to_raw()
     #    printHEX(msg)
         self.sendRAW(msg)
-        print("TxDone")
-
-    #    RXpayload, RXerr = sx.recv(0, True, 5000)    # recv(len=0, timeout_en=False, timeout_ms=0)
-    #    error = SX1262.STATUS[err]
-    #    print("Modem status: ", error)
-
+        print("Done")
         startTime = utime.ticks_ms()
 
     #    try:
         while True:
             if (len(self.RXpayload) > 0):
-                print("Message received:", end='')
+                print("Message received in RX1:", end='')
                 lorawan = LoRaWAN.new([], self.AppKey)
                 lorawan.read(self.RXpayload)
                 decPayload = lorawan.get_payload()
@@ -414,8 +412,9 @@ class LoRaWANHandler:
     #            print(lorawan.get_mhdr().get_mversion())
 
                 if lorawan.get_mhdr().get_mtype() == MHDR.JOIN_ACCEPT:
-                    print("Join-Accept")
-    #                print("MIC: ", lorawan.valid_mic())
+                    print("Join-Accept", end='')
+                    if (lorawan.valid_mic()):
+                        print("MIC: Valid")
     #                    print("DevAddr: ", lorawan.get_devaddr())
     #                print("DevAddr: ", end='')
     #                printHEX(lorawan.get_DevAddr())
@@ -428,37 +427,81 @@ class LoRaWANHandler:
     #                print("AppSKey: ", end='')
     #                printHEX(lorawan.derive_AppSKey(self.DevNOnce))
     #                print("\n")
-                    self.DevAddr = lorawan.get_devaddr()
-                    self.NwkSKey = lorawan.derive_nwskey(self.DevNOnce)
-                    self.AppSKey = lorawan.derive_appskey(self.DevNOnce)
-                    self.DLSettings = lorawan.mac_payload.frm_payload.get_dlsettings()
-                    self.RXDelay = lorawan.mac_payload.frm_payload.get_rxdelay()
-                    self.cflist = lorawan.mac_payload.frm_payload.get_cflist()
-
-                    print("OTAA activation successful!")
-                    success = True
-                    break
+                        self.DevAddr = lorawan.get_devaddr()
+                        self.NwkSKey = lorawan.derive_nwskey(self.DevNOnce)
+                        self.AppSKey = lorawan.derive_appskey(self.DevNOnce)
+                        self.DLSettings = lorawan.mac_payload.frm_payload.get_dlsettings()
+                        self.RXDelay = lorawan.mac_payload.frm_payload.get_rxdelay()
+                        self.cflist = lorawan.mac_payload.frm_payload.get_cflist()
+                        self.Connected = True
+                        print("OTAA activation successful!")
+                        break
+                    else:
+                        print("MIC: Invalid")
+                        self.RXpayload = []
+                else:
+                    print("Something else")
+                    self.RXpayload = []
 
     #        time.sleep_ms(10)
     #        print("Current time: ", utime.ticks_ms())
     #        print("Time elapsed since start: ", utime.ticks_diff(utime.ticks_ms, startTime))
 
-            # 30 seconds timeout
-            if (utime.ticks_diff(utime.ticks_ms(), startTime) > 30000):
-                print("RX Timeout!") 
+            # Timeout
+            if (utime.ticks_diff(utime.ticks_ms(), startTime) > (RX2Window - 100)):
+                print("RX1 Timeout!") 
                 break
+
+        # Receive RX2, only if nothing received in RX1 window
+        if (self.Connected == False):
+            self.SXRadio.setFrequency(self.RX2Freq)
+            self.setDR(self.RX2DR)
+
+            while True:
+                if (len(self.RXpayload) > 0):
+                    print("Message received in RX2:", end='')
+                    lorawan = LoRaWAN.new([], self.AppKey)
+                    lorawan.read(self.RXpayload)
+                    decPayload = lorawan.get_payload()
+
+                    if lorawan.get_mhdr().get_mtype() == MHDR.JOIN_ACCEPT:
+                        print("Join-Accept", end='')
+                        if (lorawan.valid_mic()):
+                            print("MIC: Valid")
+                            self.DevAddr = lorawan.get_devaddr()
+                            self.NwkSKey = lorawan.derive_nwskey(self.DevNOnce)
+                            self.AppSKey = lorawan.derive_appskey(self.DevNOnce)
+                            self.DLSettings = lorawan.mac_payload.frm_payload.get_dlsettings()
+                            self.RXDelay = lorawan.mac_payload.frm_payload.get_rxdelay()
+                            self.cflist = lorawan.mac_payload.frm_payload.get_cflist()
+                            self.Connected = True
+                            print("OTAA activation successful!")
+                            break
+                        else:
+                            print("MIC: Invalid")
+                            self.RXpayload = []
+                    else:
+                        print("Something else")
+                        self.RXpayload = []
+
+                # Timeout
+                if (utime.ticks_diff(utime.ticks_ms(), startTime) > (RXTimeout)):
+                    print("RX2 Timeout!")
+                    break
     #    except:
     #        print("Error occured during JoinAccept receiving!")
     #    finally:
         self.incrementDevNonce()
         self.saveDevNonce()
-        return success
+        self.SXRadio.setFrequency(self.nextFreq())
+        self.setDR(self.currentDR)
+        return
 
     # End of otaa()
 
 
 
-    def send(self, msg = "Testmessage!", confirmed = False):
+    def send(self, msg, confirmed = False):
         '''
         The main LoRaWAN frame handler method
         As this method handles everything LoRa related hhis should be the only method called from outside.
@@ -472,91 +515,181 @@ class LoRaWANHandler:
         def CheckFrameValidity(frame):
             '''
             Frame is valid if:
+            - MIC is valid
             - DevAddr is a match
             - FcntDown is greater than previous
-            - MIC is valid
-            - Fport is 0..223
+            - Fport is 0..223   (Optional)
             '''
             validity = False
 
-            if frame.get_mhdr().get_mtype() == MHDR.JOIN_ACCEPT:
-                if (frame.valid_mic()):
-                    validity = True
-
-            if ((frame.get_mhdr().get_mtype() == MHDR.CONF_DATA_DOWN) |
+            if ((frame.get_mhdr().get_mtype() == MHDR.CONF_DATA_DOWN) or
                     (frame.get_mhdr().get_mtype() == MHDR.UNCONF_DATA_DOWN)):
                 if (frame.valid_mic()):
-                    validity = True
+                    if (bytes(reversed(frame.get_devaddr())) == bytes(self.DevAddr)):
+                        FrameFcnt = frame.get_mac_payload().get_fhdr().get_fcnt()
+                        if ((FrameFcnt[1] * 256 + FrameFcnt[0]) > self.FCntDown):
+                            if (frame.get_mac_payload().get_fport() == None):
+                                validity = True
+                            elif (frame.get_mac_payload().get_fport() < 224):
+                                validity = True
+                            else:
+                                print("Wrong fport number!")
+                        else:
+                            print("FCntDown not incremented!")
+                    else:
+                        print("DevAddr mismatch!", bytes(reversed(frame.get_devaddr())), " vs ", bytes(self.DevAddr))
+
+                else:
+                    print("Invalid MIC")
 
             return validity
         # End of CheckFrameValidity()
 
+
+
+        def FindHighestPriorityFrame():
+            '''
+            Find the first occurence of the highest priority frame
+            '''
+            firstHighest = 100
+            firstHighestIdx = 0
+            for idx in range(len(self.FrameQueue)):
+                if (self.FrameQueue[idx][0] < firstHighest):
+                    firstHighest = self.FrameQueue[idx][0]
+                    firstHighestIdx = idx
+            return (firstHighest, firstHighestIdx)
+
+
+
+        def ProcessFrame(frame):
+            print("Processing frame: ", end='')
+            FrameFcnt = frame.get_mac_payload().get_fhdr().get_fcnt()
+            self.FCntDown = FrameFcnt[1] * 256 + FrameFcnt[0]
+
+            if (confirmed == False):
+                self.Result = True
+                
+            if ((confirmed) and ((frame.get_mac_payload().get_fhdr().get_fctrl() & self.ACK) != 0)):
+                self.Result = True
+
+            if (frame.get_mhdr().get_mtype() == MHDR.CONF_DATA_DOWN):
+                # If no frame in queue create an empty frame with ACK set
+                # If there is, find the highest priority and set ACK
+                print("Confirmed Data down")
+                if (len(self.FrameQueue) == 0):
+#                    self.FrameQueue.append((0, self.ACK, list(b'\x00')))
+                    self.FrameQueue.append((0, self.ACK, None))
+                else:
+                    firstHighestIdx = FindHighestPriorityFrame()[1]
+                    fctrl = self.FrameQueue[firstHighestIdx][1]
+                    fctrl = fctrl & self.ACK
+                    self.FrameQueue[firstHighestIdx][1] = fctrl
+                print ("Received message: ", bytes(frame.get_payload()))
+                
+
+            if (frame.get_mhdr().get_mtype() == MHDR.UNCONF_DATA_DOWN):
+                # Nothing to do here
+                print("Unconfirmed Data down")
+                pass
+
+            # ADR
+
+            # FPending
+
+            return
+        # End of ProcessFrame()
+
+
+
         RX1Window = self.RECEIVE_DELAY1 * 1000
         RX2Window = self.RECEIVE_DELAY2 * 1000
         RXTimeout = (self.RECEIVE_DELAY2 + 10) * 1000
-        usedDevNOnce = 0
         lwFrame = None
+        self.Result = False
+
+
+
+        # Check if end-device is connected and try connecting
+        while (self.Connected == False):
+            self.otaa()
+
+
 
         # TODO: Check message length, if OK add to the queue
-        if (len(msg) > 222):
-            print("Message is too long for the current DR settings.")
-            return False
-        if type(msg) == type(""):
-            encmsg = list(map(ord, msg))
-        elif type(msg) == type(b''):
-            encmsg = list(msg)
+        if (msg == None):
+            self.FrameQueue.append((2, 0, None))
         else:
-            print("Unsupported message format. Only string and bytes/bytearray supported.")
-            return
-        self.FrameQueue.append((3, 0, encmsg))
+            if (len(msg) > 222):
+                print("Message is too long for the current DR settings.")
+                return False
+            if type(msg) == type(""):
+                encmsg = list(map(ord, msg))
+            elif type(msg) == type(b''):
+                encmsg = list(msg)
+            else:
+                print("Unsupported message format. Only string and bytes/bytearray supported.")
+                return
+            self.FrameQueue.append((2, 0, encmsg))
 
-        # If not connected add Join-Request frame to the queue
-        if (self.Connected == False):
-            self.FrameQueue.append((0, 0, ""))
+
 
         while (len(self.FrameQueue) != 0):       # Frame Queue processing loop
             firstHighest = 100
             firstHighestIdx = 0
             print("Queue length:", len(self.FrameQueue))
             print(self.FrameQueue)
-            # Next frame
-            for idx in range(len(self.FrameQueue)):                     # Find the first occurence of the highest priority
-                if (self.FrameQueue[idx][0] < firstHighest):
-                    firstHighest = self.FrameQueue[idx][0]
-                    firstHighestIdx = idx
+            print("FCntUp:", self.FCntUp, " FCntDown:", self.FCntDown)
+
+
+
+            # Create next frame
+            firstHighest, firstHighestIdx = FindHighestPriorityFrame()
             print("Highest priority is:", firstHighest, " at index:", firstHighestIdx)
-
-            if (firstHighest == 0):                         # OTAA Join-Request
-                self.loadDevNonce()
-                print("Sending Join request")
-                lwFrame = LoRaWAN.new(self.AppKey)
-                lwFrame.create(MHDR.JOIN_REQUEST, {'deveui': self.DevEUI, 'appeui': self.JoinEUI, 'devnonce': self.DevNOnce})
+            if (firstHighest == 0):                         # Create MAC answer frame
+                lwFrame = LoRaWAN.new(self.NwkSKey, self.AppSKey)
+                if (self.FrameQueue[firstHighestIdx][2] != None):
+                    lwFrame.create(MHDR.UNCONF_DATA_UP, {'devaddr': self.DevAddr, 'fcnt': self.FCntUp, 'data': self.FrameQueue[firstHighestIdx][2]})
+                else:
+                    lwFrame.create(MHDR.UNCONF_DATA_UP, {'devaddr': self.DevAddr, 'fcnt': self.FCntUp})
+                lwFrame.mac_payload.fhdr.set_fctrl(self.FrameQueue[firstHighestIdx][1])
                 self.FrameQueue.pop(firstHighestIdx)
-                usedDevNOnce = self.DevNOnce
-                self.incrementDevNonce()
-                self.saveDevNonce()
-                RX1Window = self.JOIN_ACCEPT_DELAY1 * 1000
-                RX2Window = self.JOIN_ACCEPT_DELAY2 * 1000
-                RXTimeout = (self.JOIN_ACCEPT_DELAY2 + 10) * 1000
 
-            if (firstHighest == 3):                         # Send User message
+            if (firstHighest == 2):                         # Create user data frame
                 if confirmed:
+                    print("Sending confirmed data")
                     msgtype = MHDR.CONF_DATA_UP
                 else:
+                    print("Sending unconfirmed data")
                     msgtype = MHDR.UNCONF_DATA_UP
                     
                 lwFrame = LoRaWAN.new(self.NwkSKey, self.AppSKey)
-                lwFrame.create(msgtype, {'devaddr': self.DevAddr, 'fcnt': self.FCntUp, 'data': self.FrameQueue[firstHighestIdx][2]})
+                if (self.FrameQueue[firstHighestIdx][2] != None):
+                    lwFrame.create(msgtype, {'devaddr': self.DevAddr, 'fcnt': self.FCntUp, 'data': self.FrameQueue[firstHighestIdx][2]})
+                else:
+                    lwFrame.create(msgtype, {'devaddr': self.DevAddr, 'fcnt': self.FCntUp})
                 lwFrame.mac_payload.fhdr.set_fctrl(self.FrameQueue[firstHighestIdx][1])
                 self.FrameQueue.pop(firstHighestIdx)
+
 
 
             self.FrameCount = 0    
             self.RXpayload = []
             self.Receive = self.INVALID
-            self.Result = False
+
+
 
             while ((self.FrameCount < self.NbTrans) and (self.Receive != self.VALID)):    # Frame retransmission loop
+                print("FrameCount:", self.FrameCount, "NbTrans:", self.NbTrans, "Receive:", end='')
+                if (self.Receive == self.VALID):
+                    print("VALID")
+                else:
+                    print("INVALID")
+
+                # Wait RETRANSMIT_TIMEOUT
+                if (self.FrameCount != 0):
+                    utime.sleep_ms(RETRANSMIT_TIMEOUT_MIN + (self.randomNumber() % ((RETRANSMIT_TIMEOUT_MAX - RETRANSMIT_TIMEOUT_MIN) * 1000)))
+
+
                 # Send
                 msg = lwFrame.to_raw()
                 # TODO: Add CAD
@@ -564,7 +697,8 @@ class LoRaWANHandler:
                 print("TxDone")
                 startTime = utime.ticks_ms()
                 print("Start:", startTime)
-        #        utime.sleep_ms(RX1Window - 100)
+
+
 
                 # Receive RX1
                 while True:
@@ -572,9 +706,6 @@ class LoRaWANHandler:
                         print("Message received in RX1: ", utime.ticks_ms(), end='')
                         lwFrame = LoRaWAN.new(self.NwkSKey, self.AppSKey)
                         lwFrame.read(self.RXpayload)
-                        if (lwFrame.get_mhdr().get_mtype() == MHDR.JOIN_ACCEPT):
-                            lwFrame = LoRaWAN.new([], self.AppKey)
-                            lwFrame.read(self.RXpayload)
                         decPayload = lwFrame.get_payload()
                         if (CheckFrameValidity(lwFrame)):
                             print(" Valid")
@@ -588,6 +719,8 @@ class LoRaWANHandler:
                         print("RX1 Timeout!") 
                         break
 
+
+
                 # Receive RX2, only if nothing received in RX1 window
                 if (self.Receive == self.INVALID):
                     self.SXRadio.setFrequency(self.RX2Freq)
@@ -597,9 +730,6 @@ class LoRaWANHandler:
                             print("Message received in RX2: ", utime.ticks_ms(), end='')
                             lwFrame = LoRaWAN.new(self.NwkSKey, self.AppSKey)
                             lwFrame.read(self.RXpayload)
-                            if (lwFrame.get_mhdr().get_mtype() == MHDR.JOIN_ACCEPT):
-                                lwFrame = LoRaWAN.new([], self.AppKey)
-                                lwFrame.read(self.RXpayload)
                             decPayload = lwFrame.get_payload()
                             if (CheckFrameValidity(lwFrame)):
                                 print(" Valid")
@@ -613,36 +743,24 @@ class LoRaWANHandler:
                             print("RX2 Timeout!") 
                             break
 
+
+
                 # Hop frequency
                 self.SXRadio.setFrequency(self.nextFreq())
                 self.setDR(self.currentDR)
                 self.FrameCount += 1
             # End of Frame retransmission loop
 
+
+
             # Process received frame
             if (self.Receive == VALID):
-                if lwFrame.get_mhdr().get_mtype() == MHDR.JOIN_ACCEPT:
-                    print("Join-Accept")
-                    self.DevAddr = lwFrame.get_devaddr()
-                    self.NwkSKey = lwFrame.derive_nwskey(usedDevNOnce)
-                    self.AppSKey = lwFrame.derive_appskey(usedDevNOnce)
-                    self.DLSettings = lwFrame.mac_payload.frm_payload.get_dlsettings()
-                    self.RXDelay = lwFrame.mac_payload.frm_payload.get_rxdelay()
-                    self.cflist = lwFrame.mac_payload.frm_payload.get_cflist()
-                    self.Connected = True
-                if (lwFrame.get_mhdr().get_mtype() == MHDR.CONF_DATA_DOWN):
-                    print("Confirmed Data down")
-                    self.Result = True
-                if (lwFrame.get_mhdr().get_mtype() == MHDR.UNCONF_DATA_DOWN):
-                    print("Unconfirmed Data down")
-                    if ((confirmed) and ((lwFrame.get_mac_payload().get_fhdr().get_fcnt() & ACK) != 0)):
-                        self.Result = True
-                    if (confirmed == False):
-                        self.Result = True
+                ProcessFrame(lwFrame)
+
+
 
             # Increment FCntUp
             self.FCntUp += 1
-
         # End of Frame Queue processing loop
 
         return self.Result
@@ -652,15 +770,15 @@ class LoRaWANHandler:
 
 
 if (locals()['__name__'] == '__main__'):
-    print("LoRaWANHandler class tests")
+    print("\t\tLoRaWANHandler class tests")
     lh = LoRaWANHandler()
-    print("OTAA activation")
+    print("\t\tOTAA activation")
     lh.send()
-    print("Sending unconfirmed message")
-    print("Result:", lh.send("Hello"))
-    print("Sending confirmed message")
-    print("Result:", lh.send("Hello", True))
-
+    print("\t\tSending unconfirmed message")
+    print("\t\tResult:", lh.send("Hello"))
+    print("\t\tSending confirmed message")
+    print("\t\tResult:", lh.send("Hello", True))
+    # SGk=
 
 
 
