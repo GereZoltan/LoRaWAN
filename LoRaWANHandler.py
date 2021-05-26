@@ -91,6 +91,7 @@ class LoRaWANHandler:
     AppSKey = []
 
     # LoRaWAN link
+    # TODO: Implement RX1DROffset
     RX1DROffset = 0
     RX2DataRate = 0
     DLSettings = None
@@ -133,6 +134,18 @@ class LoRaWANHandler:
     ADRACKREQ = 0x40
     CLASSB = 0x10
 
+    # MAC Command Req/Ans - CID
+    LINKCHECK = 0x02
+    LINKADR = 0x03
+    DUTYCYCLE = 0x04
+    RXPARAMSETUP = 0x05
+    DEVSTATUS = 0x06
+    NEWCHANNEL = 0x07
+    RXTIMINGSETUP = 0x08
+    TXPARAMSETUP = 0x09
+    DICHANNEL = 0x0A
+    DEVICETIME = 0x0D
+
 ################################################################################
 
     def TXcb(self, events):
@@ -145,7 +158,7 @@ class LoRaWANHandler:
         if events & SX1262.RX_DONE:
             self.RXpayload, self.RXerr = self.SXRadio.recv()
 #            print("RXcb receive")
-            print("RXcb receive: ", utime.ticks_ms())
+#            print("RXcb receive: ", utime.ticks_ms())
     #        error = SX1262.STATUS[RXerr]
     #        print(RXpayload)
     #        if (error != ERR_NONE):
@@ -167,8 +180,10 @@ class LoRaWANHandler:
         # preambleLength = 8
         # 868.3, 125, 12, 5, SX126X_SYNC_WORD_PUBLIC, 5, 8, 0.0, true
         self.SXRadio.begin(
-                freq=self.freqList[self.currentFreq], bw=self.DRList[self.currentDR][0],
-                sf=self.DRList[self.currentDR][1], cr=5, syncWord=SX126X_SYNC_WORD_PUBLIC,
+                freq=self.freqList[self.currentFreq],
+                bw=self.DRList[self.currentDR][0],
+                sf=self.DRList[self.currentDR][1],
+                cr=5, syncWord=SX126X_SYNC_WORD_PUBLIC,
                 power=self.TXPowerTable[self.currentPower], currentLimit=60.0,
                 preambleLength=8, implicit=False, implicitLen=0xFF,
                 crcOn=True, txIq=False, rxIq=True,
@@ -266,7 +281,7 @@ class LoRaWANHandler:
 
 
 
-    # This function is obsolete as receiving is handled by RXcb callback function
+    # This function is not in use as receive is handled by RXcb callback function
     def receiveRAW(self, timeout = 3000):
         if (timeout == 0):
             msg, err = self.SXRadio.recv(0, False)
@@ -290,7 +305,11 @@ class LoRaWANHandler:
 
 
 
-    def send_abp(self, msg = "Empty string!"):
+    def sendABP(self, msg = "Empty string!"):
+        '''
+        Send a LoRaWAN frame on ABP activated connection
+        params: msg: string or bytearray
+        '''
         # TODO: msg should base64 encode first
         encmsg = list((msg)[:])
 
@@ -301,12 +320,11 @@ class LoRaWANHandler:
 
 
 
-    def Send_OTAA(self, msg = "Testmessage!", confirmed = False):
+    def sendOTAA(self, msg = "Testmessage!", confirmed = False):
         '''
-        Send a LoRaWAN frame
+        Send a LoRaWAN frame on OTAA activated connection
         params: msg: string or bytearray
                 confirmed: True / False
-                DR: dara rate 0 - 5
         return: in case of confirmed send, if answer message was received
                 in case of unconfirmed send, always True
         '''
@@ -318,7 +336,7 @@ class LoRaWANHandler:
 
         if ((len(self.NwkSKey) == 0) or (len(self.AppSKey) == 0)):
             print("Error with session keys! Have you run OTAA?")
-            return
+            return False
 
         if type(msg) == type(""):
             encmsg = list(map(ord, msg))
@@ -326,7 +344,7 @@ class LoRaWANHandler:
             encmsg = list(msg)
         else:
             print("Unsupported message format. Only string and bytes/bytearray supported.")
-            return
+            return False
 
         print(encmsg)
 
@@ -381,6 +399,10 @@ class LoRaWANHandler:
 
 
     def otaa(self):
+        '''
+        Perform OTAA (Over-the-Air Activation)
+        The result of the activation process can be seen from Connected variable
+        '''
         # Start
         # TODO: Check tx_counter
         # TODO: Read Join-Accept frame for MAC layer settings
@@ -454,8 +476,8 @@ class LoRaWANHandler:
 
         # Receive RX2, only if nothing received in RX1 window
         if (self.Connected == False):
-            self.SXRadio.setFrequency(self.RX2Freq)
-            self.setDR(self.RX2DR)
+            self.SXRadio.setFrequency(self.RX2Freq)     # RX2 window uses a specific frequency
+            self.setDR(self.RX2DR)                      # and data rate
 
             while True:
                 if (len(self.RXpayload) > 0):
@@ -518,8 +540,9 @@ class LoRaWANHandler:
             - MIC is valid
             - DevAddr is a match
             - FcntDown is greater than previous
-            - Fport is 0..223   (Optional)
+            - Fport is 0..223   (FPort field is optional)
             '''
+            # TODO: FOptsLen != 0 and FPort == 0 is invalid frame
             validity = False
 
             if ((frame.get_mhdr().get_mtype() == MHDR.CONF_DATA_DOWN) or
@@ -533,7 +556,7 @@ class LoRaWANHandler:
                             elif (frame.get_mac_payload().get_fport() < 224):
                                 validity = True
                             else:
-                                print("Wrong fport number!")
+                                print("Wrong FPort number!")
                         else:
                             print("FCntDown not incremented!")
                     else:
@@ -561,8 +584,79 @@ class LoRaWANHandler:
 
 
 
+        def ProcessMACCommands(CommandReqList):
+            CommandAnsList = bytearray(128)
+            idx = 0
+            print("\n\tProcessing MAC Commands")
+
+            if ((CommandReqList == None) or (len(CommandReqList) == 0)):
+                print("Empty CommandReqList")
+                return None
+
+            while (idx < len(CommandReqList)):
+                if (CommandReqList[idx] == self.LINKADR):           # Request for rate adaptation
+                    # DataRate (1)[7:4], TXPower (1)[3:0]
+                    # ChMask (2)
+                    # Redundancy: ChMaskCntl (1)[6:4], NbTrans [3:0]
+                    # TODO: Process ChannelMask
+                    print("\t\tLINKADR: ", end='')
+                    ans = 0
+                    idx += 1
+                    p = (CommandReqList[idx] >> 4) & 0x0F
+                    if (p != 0xF):                          # Value 0xF must be ignored
+                        if (p < len(self.DRList):
+                            print("currentDR: ", p, end='')
+                            self.currentDR = p
+                            ans = ans | 0x02                # Bit 1 is DataRateACK
+                    p = CommandReqList[idx] & 0x0F
+                    if (p != 0xF):                          # Value 0xF must be ignored
+                        if (p < len(self.TXPowerTable)):
+                            print(" currentPower: ", p)
+                            self.currentPower = p
+                            ans = ans | 0x04                # Bit 2 is PowerACK
+                    idx += 3
+                    p = CommandReqList[idx] & 0x0F
+                    if (p == 0):                            # If NbTrans field is 0
+                        p == 1                              # use the Default value
+                    self.NbTrans = p
+                    idx += 1
+                    ans = ans | 0x01                        # Bit 0 is ChannelMaskACK
+                    CommandAnsList += bytes([self.LINKADR, ans & 0x07])
+                elif (CommandAnsList[idx] == self.DUTYCYCLE):       # Transmit Duty Cycle
+                    print("\t\tDUTYCYCLE")
+                    CommandAnsList += bytes([self.DUTYCYCLE])
+                elif (CommandAnsList[idx] == self.RXPARAMSETUP):    # Receive Window Parameters
+                    # DLSettings (1)
+                    # Frequency (3)
+                    print("\t\tRXPARAMSETUP: ", end='')
+                    ans = 0
+                    idx += 1
+                    p = (CommandReqList[idx] >> 4) & 0x07
+                    print(" RX1DROffset: ", p, end='')
+                    self.RX1DROffset = p
+                    p = CommandReqList[idx] & 0x0F
+                    print(" RX2DataRate: ", p, end='')
+                    self.RX2DataRate = p
+                    idx += 1
+                    newFreq = CommandReqList[idx] + (CommandReqList[idx + 1] << 8) + (CommandReqList[idx + 2] << 16)
+                    print(" RX2Freq: ", newfreq, newFreq / 1000000)
+                    self.RX2Freq = newFreq / 1000000
+                    CommandAnsList += bytes([self.RXPARAMSETUP, 0x07])
+#                elif (CommandAnsList[idx] == self.DEVSTATUS):
+#                elif (CommandAnsList[idx] == self.NEWCHANNEL):
+#                elif (CommandAnsList[idx] == self.RXTIMINGSETUP):
+#                elif (CommandAnsList[idx] == self.TXPARAMSETUP):
+#                elif (CommandAnsList[idx] == self.DICHANNEL):
+
+
+            return list(CommandAnsList)
+
+
+
         def ProcessFrame(frame):
             print("Processing frame: ", end='')
+
+            # Update FCntDown
             FrameFcnt = frame.get_mac_payload().get_fhdr().get_fcnt()
             self.FCntDown = FrameFcnt[1] * 256 + FrameFcnt[0]
 
@@ -585,7 +679,6 @@ class LoRaWANHandler:
                     fctrl = fctrl & self.ACK
                     self.FrameQueue[firstHighestIdx][1] = fctrl
                 print ("Received message: ", bytes(frame.get_payload()))
-                
 
             if (frame.get_mhdr().get_mtype() == MHDR.UNCONF_DATA_DOWN):
                 # Nothing to do here
@@ -595,6 +688,20 @@ class LoRaWANHandler:
             # ADR
 
             # FPending
+            if ((frame.get_mac_payload().get_fhdr().get_fctrl() & self.FPENDING) != 0):
+                print("FPending ")
+                if (len(self.FrameQueue) == 0):
+                    self.FrameQueue.append((0, 0, None))
+
+            # FoptsLen != 0 - MAC commands in FOpts
+            if ((frame.get_mac_payload().get_fhdr().get_fctrl() & self.FOPTSLEN) != 0):
+                answer = ProcessMACCommands(frame.get_mac_payload().get_fhdr().get_fopts())
+                self.FrameQueue.append((0, 0, answer))
+
+            # FPorts == 0 - MAC commands in FRMPayload
+            if (frame.get_mac_payload().get_fport() == 0):
+                answer = ProcessMACCommands(frame.get_mac_payload().get_frm_payload())
+                self.FrameQueue.append((0, 0, answer))
 
             return
         # End of ProcessFrame()
@@ -648,10 +755,10 @@ class LoRaWANHandler:
             if (firstHighest == 0):                         # Create MAC answer frame
                 lwFrame = LoRaWAN.new(self.NwkSKey, self.AppSKey)
                 if (self.FrameQueue[firstHighestIdx][2] != None):
-                    lwFrame.create(MHDR.UNCONF_DATA_UP, {'devaddr': self.DevAddr, 'fcnt': self.FCntUp, 'data': self.FrameQueue[firstHighestIdx][2]})
+                    lwFrame.create(MHDR.UNCONF_DATA_UP, {'fport': 0x00, 'devaddr': self.DevAddr, 'fcnt': self.FCntUp, 'data': self.FrameQueue[firstHighestIdx][2]})
                 else:
                     lwFrame.create(MHDR.UNCONF_DATA_UP, {'devaddr': self.DevAddr, 'fcnt': self.FCntUp})
-                lwFrame.mac_payload.fhdr.set_fctrl(self.FrameQueue[firstHighestIdx][1])
+                lwFrame.mac_payload.fhdr.set_fctrl(self.FrameQueue[firstHighestIdx][1] | self.ADR)      # ADR is always set
                 self.FrameQueue.pop(firstHighestIdx)
 
             if (firstHighest == 2):                         # Create user data frame
@@ -667,7 +774,7 @@ class LoRaWANHandler:
                     lwFrame.create(msgtype, {'devaddr': self.DevAddr, 'fcnt': self.FCntUp, 'data': self.FrameQueue[firstHighestIdx][2]})
                 else:
                     lwFrame.create(msgtype, {'devaddr': self.DevAddr, 'fcnt': self.FCntUp})
-                lwFrame.mac_payload.fhdr.set_fctrl(self.FrameQueue[firstHighestIdx][1])
+                lwFrame.mac_payload.fhdr.set_fctrl(self.FrameQueue[firstHighestIdx][1] | self.ADR)      # ADR is always set
                 self.FrameQueue.pop(firstHighestIdx)
 
 

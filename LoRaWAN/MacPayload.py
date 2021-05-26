@@ -59,7 +59,13 @@ class MacPayload:
     def create(self, mtype, key, args):
         self.fhdr = FHDR()
         self.fhdr.create(mtype, args)
-        self.fport = 0x01
+        if ('fport' in args):
+            if (args['fport'] != None):
+                self.fport = args['fport']
+            else:
+                self.fport = 0x01
+        else:
+            self.fport = 0x01
         self.frm_payload = None
         if mtype == MHDR.JOIN_REQUEST:
             self.frm_payload = JoinRequestPayload()
