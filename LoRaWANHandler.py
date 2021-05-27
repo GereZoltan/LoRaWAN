@@ -78,20 +78,20 @@ class LoRaWANHandler:
     DevAddrABP = [0x26, 0x01, 0x11, 0x5f]    # MSB
     NwkSKeyABP = [0xc3, 0x24, 0x64, 0x98, 0xde, 0x56, 0x5d, 0x8c, 0x55, 0x88, 0x7c, 0x05, 0x86, 0xf9, 0x82, 0x26] # MSB
     AppSKeyABP = [0x15, 0xf6, 0xf4, 0xd4, 0x2a, 0x95, 0xb0, 0x97, 0x53, 0x27, 0xb7, 0xc1, 0x45, 0x6e, 0xc5, 0x45]    # MSB
-    # TODO: frameCounterABP should be persistent (save/load)
     frameCounterABP = 0     # Persistent
 
     # OTAA
     DevEUI = [0x16, 0x86, 0xc4, 0x97, 0x72, 0x9d, 0xc5, 0xda]    # MSB
     JoinEUI = [0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01]    # MSB
     AppKey = [0x59, 0xf4, 0x5c, 0xd8, 0xb3, 0x65, 0x53, 0x4b, 0x4d, 0x51, 0x03, 0xe0, 0x0f, 0x83, 0x69, 0x6a]    # MSB
-    DevNOnce = [0, 0]   # TODO: DevNOnce should be an int   # Persistent
+    DevNOnce = 0            # Persistent
     DevAddr = []
     NwkSKey = []
     AppSKey = []
 
     # LoRaWAN link
     # TODO: Implement RX1DROffset
+    # TODO: After OTAA update DL RX CF
     RX1DROffset = 0
     RX2DataRate = 0
     DLSettings = None
@@ -143,7 +143,7 @@ class LoRaWANHandler:
     NEWCHANNEL = 0x07
     RXTIMINGSETUP = 0x08
     TXPARAMSETUP = 0x09
-    DICHANNEL = 0x0A
+    DLCHANNEL = 0x0A
     DEVICETIME = 0x0D
 
 ################################################################################
@@ -206,17 +206,36 @@ class LoRaWANHandler:
 
 
 
+    def loadFcntABP(self):
+        try:
+            f = open("fcntupabp.dat", 'r')
+            self.frameCounterABP = int(f.read())
+        except:
+            print("Error reading FcntUpABP value!")
+            self.frameCounterABP = 0
+
+
+
+    def saveFcntABP(self):
+        try:
+            f = open("fcntupabp.dat", 'w')
+        except:
+            print("Error opening FcntUpABP file!")
+        try:
+            f.write(str(self.frameCounterABP))
+        except:
+            print("Error writing FcntUpABP file!")
+        f.close()
+
+
+
     def loadDevNonce(self):
         try:
             f = open("devnonce.dat", 'r')
-            dni = int(f.read())
-    #        print("dni: ", dni)
-            self.DevNOnce[0] = int(dni % 256)
-            self.DevNOnce[1] = int(dni / 256)
+            self.DevNOnce = int(f.read())
         except:
             print("Error reading DevNonce value!")
-            self.DevNOnce[0] = 0
-            self.DevNOnce[1] = 0
+            self.DevNOnce = 0
 
 
 
@@ -226,21 +245,10 @@ class LoRaWANHandler:
         except:
             print("Error opening DevNonce file!")
         try:
-            dn = self.DevNOnce[1] * 256 + self.DevNOnce[0]
-            f.write(str(dn))
+            f.write(str(self.DevNOnce))
         except:
             print("Error writing DevNonce file!")
         f.close()
-
-
-
-    def incrementDevNonce(self):
-        # increment DevNOnce, Remember: it is LSB stored
-        if self.DevNOnce[0] == 255:
-            self.DevNOnce[0] = 0
-            self.DevNOnce[1] += 1
-        else:
-            self.DevNOnce[0] += 1
 
 
 
@@ -272,11 +280,22 @@ class LoRaWANHandler:
 
 
 
+    def scan(self):
+        if (self.SXRadio.scanChannel() == CHANNEL_FREE):
+            return True
+        else:
+            return False
+
+
+
     def sendRAW(self, msg=b'Hello'):
         if (type(msg) == type("")):
             msg = bytes(msg, 'utf-8')
         elif (type(msg) == type([])):
             msg = bytes(msg)
+        # CAD
+        while (self.scan == False):
+            pass
         self.SXRadio.send(msg)
 
 
@@ -294,107 +313,59 @@ class LoRaWANHandler:
         return msg
 
 
-
-    def scan(self):
-        if (self.SXRadio.scanChannel() == CHANNEL_FREE):
-#            print("Channel free")
-            return True
-        else:
-#            print("Channel activity detected")
-            return False
-
-
-
-    def sendABP(self, msg = "Empty string!"):
+    # ABP send could be integrated into the main send method
+    def sendABP(self, msg = ""):
         '''
         Send a LoRaWAN frame on ABP activated connection
         params: msg: string or bytearray
         '''
-        # TODO: msg should base64 encode first
-        encmsg = list((msg)[:])
+        if type(msg) == type(""):
+            encmsg = list(map(ord, msg))
+        elif type(msg) == type(b''):
+            encmsg = list(msg)
+        else:
+            print("Missing or unsupported message format. Only string and bytes/bytearray supported.")
+            return
 
-        lorawan = LoRaWAN.new(NwkSKeyABP, AppSKeyABP)
-        lorawan.create(MHDR.UNCONF_DATA_UP, {'DevAddr': devaddrABP, 'fcnt': frameCounterABP, 'data': encmsg})
+        self.loadFcntABP()
+        lorawan = LoRaWAN.new(self.NwkSKeyABP, self.AppSKeyABP)
+        lorawan.create(MHDR.UNCONF_DATA_UP, {'devaddr': self.DevAddrABP, 'fcnt': self.frameCounterABP, 'data': encmsg})
         self.sendRAW(lorawan.to_raw())
         self.frameCounterABP += 1
+        self.saveFcntABP()
+        return
 
 
 
-    def sendOTAA(self, msg = "Testmessage!", confirmed = False):
+    def sendUnconfirmed(self, msg = ""):
         '''
-        Send a LoRaWAN frame on OTAA activated connection
+        Send an unconfirmed frame on OTAA activated connection
+        Lightweight method, no receive windows opened
         params: msg: string or bytearray
-                confirmed: True / False
-        return: in case of confirmed send, if answer message was received
-                in case of unconfirmed send, always True
         '''
-        # TODO: Check if connected
-        # TODO: Check for confirmation
-        # TODO: Chock for incoming in both receive windows
-
-        success = False
-
-        if ((len(self.NwkSKey) == 0) or (len(self.AppSKey) == 0)):
-            print("Error with session keys! Have you run OTAA?")
-            return False
+        while (self.Connected == False):
+            self.otaa()
 
         if type(msg) == type(""):
             encmsg = list(map(ord, msg))
         elif type(msg) == type(b''):
             encmsg = list(msg)
         else:
-            print("Unsupported message format. Only string and bytes/bytearray supported.")
-            return False
+            print("Missing or unsupported message format. Only string and bytes/bytearray supported.")
+            return
 
-        print(encmsg)
-
-        if confirmed:
-            msgtype = MHDR.CONF_DATA_UP
-        else:
-            msgtype = MHDR.UNCONF_DATA_UP
-            
-        self.RXpayload = []
         self.SXRadio.setFrequency(self.nextFreq())
-        self.setDR(currentDR)
+        self.setDR(self.currentDR)
 
         lorawan = LoRaWAN.new(self.NwkSKey, self.AppSKey)
-    #    print("NwkSKey", self.nwskey)
-    #    print("AppSKey", self.AppSKey)
-        print("Current FCntUpnt:", self.FCntUp)
-        lorawan.create(msgtype, {'devaddr': self.DevAddr, 'fcnt': self.FCntUp, 'data': encmsg})
+        print("Current FCntUp:", self.FCntUp)
+        lorawan.create(MHDR.UNCONF_DATA_UP, {'devaddr': self.DevAddr, 'fcnt': self.FCntUp, 'data': encmsg})
         self.sendRAW(lorawan.to_raw())
         print("TxDone")
-        self.FCntUp+= 1
+        self.FCntUp += 1
 
-        if confirmed:
-            startTime = utime.ticks_ms()
-    #        try:
-            while True:
-                if (len(self.RXpayload) > 0):
-                    print("Confirmation received")
-                    lorawan = LoRaWAN.new(self.NwkSKey, self.AppSKey)
-                    lorawan.read(self.RXpayload)
-    #                if (lorawan.get_payload() != None):
-    #                    print("Payload: ", lorawan.get_payload())
-    #                else:
-    #                    print("No payload!")
-    #                print("MHDR version: ", lorawan.get_mhdr().get_mversion())
-    #                print("MHDR type: ", lorawan.get_mhdr().get_mtype())
-    #                print("Received MIC: ", lorawan.get_mic(), " Computed MIC: ", lorawan.compute_mic(), " Valid: ", lorawan.valid_mic())
-                    success = True
-                    break
-
-                # 30 seconds timeout
-                if (utime.ticks_diff(utime.ticks_ms(), startTime) > 30000):
-                    print("RX Timeout!") 
-                    break
-    #        except:
-    #            print("Error occured during receiving!")
-        else:
-            success = True          # Sending unconfirmed message always True
-
-        return success
-    # End of Send_OTAA()
+        return
+    # End of SendUnconfirmed()
 
 
 
@@ -412,11 +383,12 @@ class LoRaWANHandler:
         RXTimeout = (self.JOIN_ACCEPT_DELAY2 + 10) * 1000
 
         self.loadDevNonce()
+        currentDevNOnce = bytes([self.DevNOnce & 0xFF, (self.DevNOnce >> 8) & 0xFF])
         self.SXRadio.setFrequency(self.nextFreq())
         self.setDR(self.currentDR)
         print("Sending Join request:", end='')
         lorawan = LoRaWAN.new(self.AppKey)
-        lorawan.create(MHDR.JOIN_REQUEST, {'deveui': self.DevEUI, 'appeui': self.JoinEUI, 'devnonce': self.DevNOnce})
+        lorawan.create(MHDR.JOIN_REQUEST, {'deveui': self.DevEUI, 'appeui': self.JoinEUI, 'devnonce': currentDevNOnce})
         msg = lorawan.to_raw()
     #    printHEX(msg)
         self.sendRAW(msg)
@@ -441,17 +413,17 @@ class LoRaWANHandler:
     #                print("DevAddr: ", end='')
     #                printHEX(lorawan.get_DevAddr())
     #                print("\n")
-    #                    print("NwkSKey: ", lorawan.derive_nwskey(self.DevNOnce))
+    #                    print("NwkSKey: ", lorawan.derive_nwskey(currentDevNOnce))
     #                print("NwkSKey: ", end='')
-    #                printHEX(lorawan.derive_NwkSKey(self.DevNOnce))
+    #                printHEX(lorawan.derive_NwkSKey(currentDevNOnce))
     #                print("\n")
-    #                    print("AppSKey: ", lorawan.derive_appskey(self.DevNOnce))
+    #                    print("AppSKey: ", lorawan.derive_appskey(currentDevNOnce))
     #                print("AppSKey: ", end='')
-    #                printHEX(lorawan.derive_AppSKey(self.DevNOnce))
+    #                printHEX(lorawan.derive_AppSKey(currentDevNOnce))
     #                print("\n")
                         self.DevAddr = lorawan.get_devaddr()
-                        self.NwkSKey = lorawan.derive_nwskey(self.DevNOnce)
-                        self.AppSKey = lorawan.derive_appskey(self.DevNOnce)
+                        self.NwkSKey = lorawan.derive_nwskey(currentDevNOnce)
+                        self.AppSKey = lorawan.derive_appskey(currentDevNOnce)
                         self.DLSettings = lorawan.mac_payload.frm_payload.get_dlsettings()
                         self.RXDelay = lorawan.mac_payload.frm_payload.get_rxdelay()
                         self.cflist = lorawan.mac_payload.frm_payload.get_cflist()
@@ -491,8 +463,8 @@ class LoRaWANHandler:
                         if (lorawan.valid_mic()):
                             print("MIC: Valid")
                             self.DevAddr = lorawan.get_devaddr()
-                            self.NwkSKey = lorawan.derive_nwskey(self.DevNOnce)
-                            self.AppSKey = lorawan.derive_appskey(self.DevNOnce)
+                            self.NwkSKey = lorawan.derive_nwskey(currentDevNOnce)
+                            self.AppSKey = lorawan.derive_appskey(currentDevNOnce)
                             self.DLSettings = lorawan.mac_payload.frm_payload.get_dlsettings()
                             self.RXDelay = lorawan.mac_payload.frm_payload.get_rxdelay()
                             self.cflist = lorawan.mac_payload.frm_payload.get_cflist()
@@ -513,17 +485,17 @@ class LoRaWANHandler:
     #    except:
     #        print("Error occured during JoinAccept receiving!")
     #    finally:
-        self.incrementDevNonce()
+#        self.incrementDevNonce()
+        self.DevNOnce += 1
         self.saveDevNonce()
         self.SXRadio.setFrequency(self.nextFreq())
         self.setDR(self.currentDR)
         return
-
     # End of otaa()
 
 
 
-    def send(self, msg, confirmed = False):
+    def send(self, msg = "", confirmed = False):
         '''
         The main LoRaWAN frame handler method
         As this method handles everything LoRa related hhis should be the only method called from outside.
@@ -585,7 +557,7 @@ class LoRaWANHandler:
 
 
         def ProcessMACCommands(CommandReqList):
-            CommandAnsList = bytearray(128)
+            CommandAnsList = bytearray()
             idx = 0
             print("\n\tProcessing MAC Commands")
 
@@ -604,7 +576,7 @@ class LoRaWANHandler:
                     idx += 1
                     p = (CommandReqList[idx] >> 4) & 0x0F
                     if (p != 0xF):                          # Value 0xF must be ignored
-                        if (p < len(self.DRList):
+                        if (p < len(self.DRList)):
                             print("currentDR: ", p, end='')
                             self.currentDR = p
                             ans = ans | 0x02                # Bit 1 is DataRateACK
@@ -622,10 +594,12 @@ class LoRaWANHandler:
                     idx += 1
                     ans = ans | 0x01                        # Bit 0 is ChannelMaskACK
                     CommandAnsList += bytes([self.LINKADR, ans & 0x07])
-                elif (CommandAnsList[idx] == self.DUTYCYCLE):       # Transmit Duty Cycle
+                elif (CommandReqList[idx] == self.DUTYCYCLE):       # Transmit Duty Cycle
+                    # DutyCyclePL (1)[3:0]
                     print("\t\tDUTYCYCLE")
+                    idx += 2
                     CommandAnsList += bytes([self.DUTYCYCLE])
-                elif (CommandAnsList[idx] == self.RXPARAMSETUP):    # Receive Window Parameters
+                elif (CommandReqList[idx] == self.RXPARAMSETUP):    # Receive Window Parameters
                     # DLSettings (1)
                     # Frequency (3)
                     print("\t\tRXPARAMSETUP: ", end='')
@@ -641,13 +615,50 @@ class LoRaWANHandler:
                     newFreq = CommandReqList[idx] + (CommandReqList[idx + 1] << 8) + (CommandReqList[idx + 2] << 16)
                     print(" RX2Freq: ", newfreq, newFreq / 1000000)
                     self.RX2Freq = newFreq / 1000000
+                    idx += 3
                     CommandAnsList += bytes([self.RXPARAMSETUP, 0x07])
-#                elif (CommandAnsList[idx] == self.DEVSTATUS):
-#                elif (CommandAnsList[idx] == self.NEWCHANNEL):
-#                elif (CommandAnsList[idx] == self.RXTIMINGSETUP):
-#                elif (CommandAnsList[idx] == self.TXPARAMSETUP):
-#                elif (CommandAnsList[idx] == self.DICHANNEL):
-
+                elif (CommandReqList[idx] == self.DEVSTATUS):       # End-Device Status
+                    # No payload (0)
+                    # Ans: Battery (1)
+                    #       0 - External power source
+                    #       1..254 - Battery level
+                    #       255 - Not able to measure
+                    #      RadioStatus (1)[5:0]
+                    print("\t\tDEVSTATUS", end='')
+                    idx += 1
+                    batt = 0
+                    snr = self.SXRadio.getSNR()
+                    print("SNR:", snr)
+                    CommandAnsList += bytes([self.DEVSTATUS, batt, (snr >> 2)])
+                elif (CommandReqList[idx] == self.NEWCHANNEL):
+                    # ChIndex (1)
+                    # Frequency (3)
+                    # DRRange (1)
+                    print("\t\tNEWCHANNEL", end='')
+                    idx += 6
+                    CommandAnsList += bytes([self.NEWCHANNEL, 0x03])
+                elif (CommandReqList[idx] == self.RXTIMINGSETUP):
+                    # RxTimingSettings (1)[3:0]
+                    print("\t\tRXTIMINGSETUP", end='')
+                    idx +=1
+                    delay = CommandReqList[idx] & 0x0F
+                    if (delay == 0):
+                        delay = 1
+                    self.RECEIVE_DELAY1 = delay + 4
+                    self.RECEIVE_DELAY2 = self.RECEIVE_DELAY1 + 1
+                    idx +=1
+                    CommandAnsList += bytes([self.RXTIMINGSETUP])
+                elif (CommandReqList[idx] == self.TXPARAMSETUP):
+                    # EIRP_DwellTime (1)
+                    print("\t\tTXPARAMSETUP", end='')
+                    idx += 2
+                    CommandAnsList += bytes([self.TXPARAMSETUP])
+                elif (CommandReqList[idx] == self.DLCHANNEL):
+                    # ChIndex (1)
+                    # Frequency (3)
+                    print("\t\tDLCHANNEL", end='')
+                    idx += 5
+                    CommandAnsList += bytes([self.DLCHANNEL, 0x03])
 
             return list(CommandAnsList)
 
@@ -754,6 +765,7 @@ class LoRaWANHandler:
             print("Highest priority is:", firstHighest, " at index:", firstHighestIdx)
             if (firstHighest == 0):                         # Create MAC answer frame
                 lwFrame = LoRaWAN.new(self.NwkSKey, self.AppSKey)
+                print("Current FCntUp:", self.FCntUp)
                 if (self.FrameQueue[firstHighestIdx][2] != None):
                     lwFrame.create(MHDR.UNCONF_DATA_UP, {'fport': 0x00, 'devaddr': self.DevAddr, 'fcnt': self.FCntUp, 'data': self.FrameQueue[firstHighestIdx][2]})
                 else:
@@ -770,6 +782,7 @@ class LoRaWANHandler:
                     msgtype = MHDR.UNCONF_DATA_UP
                     
                 lwFrame = LoRaWAN.new(self.NwkSKey, self.AppSKey)
+                print("Current FCntUp:", self.FCntUp)
                 if (self.FrameQueue[firstHighestIdx][2] != None):
                     lwFrame.create(msgtype, {'devaddr': self.DevAddr, 'fcnt': self.FCntUp, 'data': self.FrameQueue[firstHighestIdx][2]})
                 else:
@@ -799,7 +812,6 @@ class LoRaWANHandler:
 
                 # Send
                 msg = lwFrame.to_raw()
-                # TODO: Add CAD
                 self.sendRAW(msg)
                 print("TxDone")
                 startTime = utime.ticks_ms()
@@ -876,16 +888,36 @@ class LoRaWANHandler:
 
 
 
-if (locals()['__name__'] == '__main__'):
-    print("\t\tLoRaWANHandler class tests")
+def test():
+    print("\t\t---LoRaWANHandler class tests---")
     lh = LoRaWANHandler()
-    print("\t\tOTAA activation")
-    lh.send()
-    print("\t\tSending unconfirmed message")
-    print("\t\tResult:", lh.send("Hello"))
-    print("\t\tSending confirmed message")
-    print("\t\tResult:", lh.send("Hello", True))
-    # SGk=
+    print("\t\t---OTAA activation---")
+    lh.otaa()
+    utime.sleep_ms(5000)
+    print("\t\t---Sending unconfirmed message from separate method---")
+    print("\t\t---Result:", lh.sendUnconfirmed("Hi!"))
+    utime.sleep_ms(5000)
+    print("\t\t---Sending unconfirmed message---")
+    print("\t\t---Result:", lh.send("Hi!"))
+    print("\t\t---Sending confirmed message")
+    print("\t\t---Result:", lh.send("Hi!", True))
+
+
+
+def ABPtest():
+    print("\t\t---LoRaWANHandler ABP tests---")
+    lh = LoRaWANHandler()
+    print("\t\t---Sending  ABP messages---")
+    print("\t\t---Result:", lh.sendABP("Hi!"))
+    utime.sleep_ms(5000)
+    print("\t\t---Result:", lh.sendABP("Hi!"))
+    # SGkh
+
+
+
+if (locals()['__name__'] == '__main__'):
+    test()
+    ABPtest()
 
 
 
